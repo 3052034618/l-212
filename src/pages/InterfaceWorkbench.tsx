@@ -56,12 +56,29 @@ import {
   deleteIssue,
   updateFieldDefinitions,
   updateInterface,
+  syncIssuesFromCheck,
+  getDatabase,
   generateId
 } from '@/lib/database'
 import { sendRequest } from '@/lib/httpClient'
-import { checkFields, extractFieldsFromData, type FieldCheckResult } from '@/lib/fieldValidator'
+import {
+  checkFields,
+  extractFieldsFromData,
+  checkSingleIssueResolved,
+  buildCheckSignature,
+  type FieldCheckResult
+} from '@/lib/fieldValidator'
 import { exportIssuesToExcel, getIssueTypeLabel, getSeverityLabel } from '@/lib/exportUtils'
-import type { HttpMethod, BodyType, KeyValuePair, TestCase, ResponseRecord, IssueItem, FieldDefinition } from '@/types'
+import type {
+  HttpMethod,
+  BodyType,
+  KeyValuePair,
+  TestCase,
+  ResponseRecord,
+  IssueItem,
+  FieldDefinition,
+  RetestRecord
+} from '@/types'
 import JsonViewer from '@/components/JsonViewer'
 import KeyValueEditor from '@/components/KeyValueEditor'
 
@@ -212,6 +229,7 @@ const InterfaceWorkbench: React.FC = () => {
       const result = await sendRequest(testCaseForReq, timeoutMs)
 
       if (result.success) {
+        const now = new Date().toISOString()
         const rec = await addResponse(product.id, api.id, {
           testCaseId: selectedTestCaseId || '',
           status: result.status!,
@@ -224,28 +242,23 @@ const InterfaceWorkbench: React.FC = () => {
         setCurrentResponse(rec)
         setLastResponse(rec)
 
-        const { results, issues } = checkFields(fieldDefs, result.data)
-        setCheckResults(results)
-
-        if (issues.length > 0) {
-          for (const issue of issues) {
-            const exists = api.issues.some(
-              (i) => i.fieldPath === issue.fieldPath && i.type === issue.type && !i.resolved
-            )
-            if (!exists) {
-              await addIssue(product.id, api.id, issue)
-            }
-          }
-          if (issues.length > 0) {
-            message.warning(`发现 ${issues.length} 个字段问题，已同步到问题清单`)
-          }
+        if (selectedTestCaseId) {
+          await updateTestCase(product.id, api.id, selectedTestCaseId, {
+            lastExecutedAt: now,
+            executionStatus: 'executed'
+          })
         }
 
+        const { results, issues: fieldIssues } = checkFields(fieldDefs, result.data)
+        setCheckResults(results)
+
+        const syncResult = await syncIssuesFromCheck(product.id, api.id, fieldIssues)
+
         if (result.status && result.status >= 400) {
-          const hasStatusIssue = api.issues.some(
+          const existingStatusIssue = api.issues.find(
             (i) => i.type === 'status_error' && !i.resolved
           )
-          if (!hasStatusIssue) {
+          if (!existingStatusIssue) {
             await addIssue(product.id, api.id, {
               type: 'status_error',
               severity: 'high',
@@ -254,13 +267,22 @@ const InterfaceWorkbench: React.FC = () => {
               actual: String(result.status)
             })
           }
+        } else {
+          const db = getDatabase()
+          const statusIssues = db.products
+            .find((p) => p.id === product.id)
+            ?.interfaces.find((i) => i.id === api.id)
+            ?.issues.filter((i) => i.type === 'status_error' && !i.resolved) || []
+          for (const si of statusIssues) {
+            await updateIssue(product.id, api.id, si.id, { resolved: true })
+          }
         }
 
         if (result.responseTime > 5000) {
-          const hasTimeoutIssue = api.issues.some(
+          const existingTimeout = api.issues.find(
             (i) => i.type === 'timeout' && !i.resolved
           )
-          if (!hasTimeoutIssue) {
+          if (!existingTimeout) {
             await addIssue(product.id, api.id, {
               type: 'timeout',
               severity: 'medium',
@@ -269,20 +291,56 @@ const InterfaceWorkbench: React.FC = () => {
               actual: `${result.responseTime}ms`
             })
           }
+        } else {
+          const db = getDatabase()
+          const timeoutIssues = db.products
+            .find((p) => p.id === product.id)
+            ?.interfaces.find((i) => i.id === api.id)
+            ?.issues.filter((i) => i.type === 'timeout' && !i.resolved) || []
+          for (const ti of timeoutIssues) {
+            await updateIssue(product.id, api.id, ti.id, { resolved: true })
+          }
         }
 
-        const unresolvedCount = api.issues.filter((i) => !i.resolved).length
+        if (selectedTestCaseId) {
+          const anyFail = results.some((r) => r.status === 'fail')
+          await updateTestCase(product.id, api.id, selectedTestCaseId, {
+            lastCheckPassed: !anyFail,
+            executionStatus: 'checked'
+          })
+        }
+
+        refresh()
+
+        const unresolvedAfter = (() => {
+          const db = getDatabase()
+          return db.products
+            .find((p) => p.id === product.id)
+            ?.interfaces.find((i) => i.id === api.id)
+            ?.issues.filter((i) => !i.resolved).length || 0
+        })()
+
         let newStatus = api.status
-        if (unresolvedCount === 0 && result.status && result.status < 400) {
+        if (unresolvedAfter === 0 && result.status && result.status < 400 && fieldDefs.length > 0) {
           newStatus = 'passed'
-        } else if (unresolvedCount > 0) {
+        } else if (unresolvedAfter > 0) {
           newStatus = 'failed'
+        } else {
+          newStatus = 'testing'
         }
         if (newStatus !== api.status) {
           await updateInterface(product.id, api.id, { status: newStatus })
         }
 
-        message.success(`请求完成，耗时 ${result.responseTime}ms`)
+        const parts: string[] = []
+        parts.push(`请求完成，耗时 ${result.responseTime}ms`)
+        if (syncResult.added > 0) parts.push(`新增问题 ${syncResult.added} 个`)
+        if (syncResult.removed > 0) parts.push(`清理已修复问题 ${syncResult.removed} 个`)
+        if (results.length > 0) {
+          const pass = results.filter((r) => r.status === 'pass').length
+          parts.push(`字段校验: ${pass}/${results.length} 通过`)
+        }
+        message.success(parts.join('；'))
       } else {
         setCurrentResponse({
           id: 'temp-error',
@@ -379,14 +437,37 @@ const InterfaceWorkbench: React.FC = () => {
     message.success('字段定义已保存')
   }
 
-  const handleRunCheck = () => {
+  const handleRunCheck = async () => {
     if (!currentResponse?.data) {
       message.warning('请先发送请求获取响应数据')
       return
     }
-    const { results } = checkFields(fieldDefs, currentResponse.data)
+    if (fieldDefs.length === 0) {
+      message.warning('还没有字段定义，请先提取或手动添加')
+      return
+    }
+    const { results, issues: fieldIssues } = checkFields(fieldDefs, currentResponse.data)
     setCheckResults(results)
-    message.success(`校验完成：共 ${results.length} 个字段`)
+
+    const syncResult = await syncIssuesFromCheck(product.id, api.id, fieldIssues)
+
+    if (selectedTestCaseId) {
+      const anyFail = results.some((r) => r.status === 'fail')
+      await updateTestCase(product.id, api.id, selectedTestCaseId, {
+        lastCheckPassed: !anyFail,
+        executionStatus: 'checked'
+      })
+    }
+
+    refresh()
+    const pass = results.filter((r) => r.status === 'pass').length
+    const parts = [`字段校验完成: ${pass}/${results.length} 通过`]
+    if (syncResult.added > 0) parts.push(`新增问题 ${syncResult.added} 个`)
+    if (syncResult.removed > 0) parts.push(`自动清理已修复问题 ${syncResult.removed} 个`)
+    if (syncResult.added === 0 && syncResult.removed === 0) {
+      parts.push('问题清单无变化')
+    }
+    message.success(parts.join('；'))
   }
 
   const handleOpenField = (f?: FieldDefinition) => {
@@ -467,15 +548,51 @@ const InterfaceWorkbench: React.FC = () => {
 
   const handleRetestIssue = async (issue: IssueItem) => {
     if (!currentResponse) {
-      message.warning('请先发送请求获取最新响应')
+      message.warning('请先发送请求获取最新响应，再进行复测')
       return
     }
-    await updateIssue(product.id, api.id, issue.id, {
+    if (fieldDefs.length === 0) {
+      message.warning('还没有字段定义，无法基于字段进行复测')
+      return
+    }
+
+    const checkResult = checkSingleIssueResolved(issue, fieldDefs, currentResponse.data)
+    const now = new Date().toISOString()
+
+    const record: RetestRecord = {
+      timestamp: now,
+      wasResolved: issue.resolved,
+      nowResolved: checkResult.resolved,
+      previousActual: issue.actual,
+      newActual: checkResult.newActual,
+      previousExpected: issue.expected,
+      comment: checkResult.resolved ? '复测通过，问题已修复' : '复测未通过，问题仍然存在'
+    }
+
+    const history = issue.retestHistory ? [...issue.retestHistory, record] : [record]
+
+    const patch: Partial<IssueItem> = {
       retestCount: issue.retestCount + 1,
-      lastRetestAt: new Date().toISOString()
-    })
+      lastRetestAt: now,
+      resolved: checkResult.resolved,
+      retestHistory: history
+    }
+    if (checkResult.newActual !== undefined) {
+      patch.actual = checkResult.newActual
+    }
+
+    await updateIssue(product.id, api.id, issue.id, patch)
     refresh()
-    message.success(`已执行第 ${issue.retestCount + 1} 次复测`)
+
+    if (checkResult.resolved) {
+      message.success(
+        `复测第 ${issue.retestCount + 1} 次：问题已自动标记为已解决 (${checkResult.newActual || '字段已正常'})`
+      )
+    } else {
+      message.warning(
+        `复测第 ${issue.retestCount + 1} 次：问题仍未修复 (实际: ${checkResult.newActual || '字段异常'})`
+      )
+    }
   }
 
   const handleExportIssues = async () => {
@@ -1103,9 +1220,63 @@ const InterfaceWorkbench: React.FC = () => {
                             <strong>备注:</strong> {issue.remark}
                           </div>
                         )}
-                        {(issue.retestCount > 0 || issue.lastRetestAt) && (
-                          <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 8 }}>
-                            复测 {issue.retestCount} 次，最后复测: {issue.lastRetestAt ? new Date(issue.lastRetestAt).toLocaleString('zh-CN') : '-'}
+                        {(issue.retestCount > 0 || issue.lastRetestAt || (issue.retestHistory && issue.retestHistory.length > 0)) && (
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: '#595959',
+                              marginTop: 8,
+                              background: '#fafcff',
+                              padding: '8px 12px',
+                              borderRadius: 4,
+                              border: '1px solid #e6f4ff'
+                            }}
+                          >
+                            <div style={{ fontWeight: 500, marginBottom: 6 }}>
+                              <ReloadOutlined style={{ color: '#1677ff', marginRight: 4 }} />
+                              复测记录（共 {issue.retestCount} 次
+                              {issue.lastRetestAt && `，最后: ${new Date(issue.lastRetestAt).toLocaleString('zh-CN')}`}）
+                            </div>
+                            {issue.retestHistory && issue.retestHistory.length > 0 ? (
+                              <div>
+                                {issue.retestHistory.slice().reverse().map((rec, idx) => (
+                                  <div
+                                    key={idx}
+                                    style={{
+                                      display: 'flex',
+                                      gap: 8,
+                                      padding: '4px 0',
+                                      borderTop: idx === 0 ? 'none' : '1px dashed #e6e6e6',
+                                      alignItems: 'flex-start',
+                                      fontSize: 11
+                                    }}
+                                  >
+                                    <span style={{ color: '#8c8c8c', width: 160, flexShrink: 0 }}>
+                                      {new Date(rec.timestamp).toLocaleString('zh-CN')}
+                                    </span>
+                                    <span style={{ width: 70, flexShrink: 0 }}>
+                                      {rec.nowResolved ? (
+                                        <Tag color="success" style={{ margin: 0 }}>已修复</Tag>
+                                      ) : (
+                                        <Tag color="warning" style={{ margin: 0 }}>仍存在</Tag>
+                                      )}
+                                    </span>
+                                    <span style={{ color: '#595959', flex: 1 }}>
+                                      {rec.comment}
+                                      {rec.previousActual !== undefined && rec.previousActual !== rec.newActual && (
+                                        <span style={{ color: '#8c8c8c', display: 'block', marginTop: 2 }}>
+                                          实际值: {rec.previousActual || '-'} → {rec.newActual || '-'}
+                                        </span>
+                                      )}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+                                暂无详细历史，建议在最新响应下重新点击"复测"按钮
+                              </div>
+                            )}
                           </div>
                         )}
                       </List.Item>

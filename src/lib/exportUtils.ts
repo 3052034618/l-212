@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx'
-import type { Product, IssueItem, AcceptanceReport, ApiInterface } from '@/types'
+import type { Product, IssueItem, AcceptanceReport, ApiInterface, TestCase } from '@/types'
 
 export const exportIssuesToExcel = async (
   issues: IssueItem[],
@@ -18,6 +18,12 @@ export const exportIssuesToExcel = async (
     是否已解决: issue.resolved ? '是' : '否',
     复测次数: issue.retestCount,
     最后复测时间: issue.lastRetestAt ? new Date(issue.lastRetestAt).toLocaleString('zh-CN') : '-',
+    最近复测结论: (() => {
+      const last = issue.retestHistory && issue.retestHistory.length > 0
+        ? issue.retestHistory[issue.retestHistory.length - 1]
+        : null
+      return last ? (last.nowResolved ? '复测通过' : '复测未通过') : '-'
+    })(),
     备注: issue.remark || ''
   }))
 
@@ -25,7 +31,7 @@ export const exportIssuesToExcel = async (
   ws['!cols'] = [
     { wch: 6 }, { wch: 20 }, { wch: 12 }, { wch: 25 }, { wch: 10 },
     { wch: 30 }, { wch: 20 }, { wch: 20 }, { wch: 10 }, { wch: 8 },
-    { wch: 20 }, { wch: 30 }
+    { wch: 20 }, { wch: 14 }, { wch: 30 }
   ]
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, '问题清单')
@@ -45,26 +51,39 @@ export const exportIssuesToExcel = async (
 }
 
 export const exportReportToExcel = async (report: AcceptanceReport) => {
+  const conclusionLabel =
+    report.acceptanceConclusion === 'accepted' ? '通过验收' :
+    report.acceptanceConclusion === 'rejected' ? '未通过验收' : '验收进行中'
+
   const summaryData = [
     { 项目: '产品名称', 内容: report.productName },
-    { 项目: '生成时间', 内容: new Date(report.generatedAt).toLocaleString('zh-CN') },
+    { 项目: '报告生成时间', 内容: new Date(report.generatedAt).toLocaleString('zh-CN') },
     { 项目: '接口总数', 内容: report.totalInterfaces },
     { 项目: '通过接口数', 内容: report.passedInterfaces },
-    { 项目: '失败接口数', 内容: report.failedInterfaces },
+    { 项目: '未通过接口数', 内容: report.failedInterfaces },
     { 项目: '待测试接口数', 内容: report.pendingInterfaces },
+    { 项目: '测试用例总数', 内容: report.totalTestCases },
+    { 项目: '已执行且通过用例数', 内容: report.passedTestCases },
+    { 项目: '已执行但未通过用例数', 内容: report.executedTestCases - report.passedTestCases },
+    { 项目: '未执行用例数', 内容: report.totalTestCases - report.executedTestCases },
     { 项目: '问题总数', 内容: report.totalIssues },
     { 项目: '未解决问题数', 内容: report.unresolvedIssues },
-    { 项目: '整体验收结论', 内容: report.unresolvedIssues === 0 ? '通过' : '未通过' }
+    { 项目: '整体验收结论', 内容: conclusionLabel },
+    { 项目: '结论说明', 内容: report.conclusionReason }
   ]
 
   const interfaceData = report.interfaces.map((iface, idx) => ({
     序号: idx + 1,
     接口名称: iface.interfaceName,
-    测试状态: getInterfaceStatusLabel(iface.status),
-    测试用例数: iface.totalTestCases,
-    通过用例数: iface.passedTestCases,
-    问题数: iface.issues.length,
-    未解决问题数: iface.issues.filter((i) => !i.resolved).length
+    接口状态: getInterfaceStatusLabel(iface.status),
+    已定义字段: iface.hasFieldDefinitions ? '是' : '否',
+    已发起请求: iface.hasResponses ? '是' : '否',
+    用例总数: iface.totalTestCases,
+    已执行用例数: iface.executedTestCases,
+    已通过用例数: iface.passedTestCases,
+    未执行用例数: iface.pendingTestCases,
+    问题总数: iface.totalIssues,
+    未解决问题数: iface.unresolvedIssues
   }))
 
   const issueData: any[] = []
@@ -72,6 +91,9 @@ export const exportReportToExcel = async (report: AcceptanceReport) => {
   report.interfaces.forEach((iface) => {
     iface.issues.forEach((issue) => {
       issueIdx++
+      const last = issue.retestHistory && issue.retestHistory.length > 0
+        ? issue.retestHistory[issue.retestHistory.length - 1]
+        : null
       issueData.push({
         序号: issueIdx,
         所属接口: iface.interfaceName,
@@ -83,6 +105,8 @@ export const exportReportToExcel = async (report: AcceptanceReport) => {
         实际值: issue.actual || '-',
         是否已解决: issue.resolved ? '是' : '否',
         复测次数: issue.retestCount,
+        最后复测时间: issue.lastRetestAt ? new Date(issue.lastRetestAt).toLocaleString('zh-CN') : '-',
+        最近复测结论: last ? (last.nowResolved ? '复测通过' : '复测未通过') : '-',
         备注: issue.remark || ''
       })
     })
@@ -109,40 +133,114 @@ export const exportReportToExcel = async (report: AcceptanceReport) => {
   return null
 }
 
+export const computeTestCaseStats = (testCases: TestCase[]) => {
+  const total = testCases.length
+  const executed = testCases.filter(
+    (t) => t.executionStatus === 'checked' || t.executionStatus === 'executed'
+  ).length
+  const passed = testCases.filter(
+    (t) => t.executionStatus === 'checked' && t.lastCheckPassed === true
+  ).length
+  const pending = total - executed
+  return { total, executed, passed, pending }
+}
+
 export const generateReport = (product: Product): AcceptanceReport => {
-  let passed = 0, failed = 0, pending = 0
-  let totalIssues = 0, unresolvedIssues = 0
+  let passedInterfaces = 0
+  let failedInterfaces = 0
+  let pendingInterfaces = 0
+  let totalIssues = 0
+  let unresolvedIssues = 0
+  let totalTestCases = 0
+  let executedTestCases = 0
+  let passedTestCases = 0
 
   const interfaceDetails = product.interfaces.map((api) => {
-    if (api.status === 'passed') passed++
-    else if (api.status === 'failed') failed++
-    else pending++
-
+    const tcStats = computeTestCaseStats(api.testCases)
+    totalTestCases += tcStats.total
+    executedTestCases += tcStats.executed
+    passedTestCases += tcStats.passed
     totalIssues += api.issues.length
-    unresolvedIssues += api.issues.filter((i) => !i.resolved).length
+    const apiUnresolved = api.issues.filter((i) => !i.resolved).length
+    unresolvedIssues += apiUnresolved
 
-    const passedTC = api.testCases.filter((t) => t.fieldDefinitions.length > 0).length
+    const hasFieldDefinitions = (api.fieldDefinitions && api.fieldDefinitions.length > 0) ||
+      api.testCases.some((t) => t.fieldDefinitions && t.fieldDefinitions.length > 0)
+    const hasResponses = api.responses.length > 0
+
+    let ifaceStatus: ApiInterface['status'] = api.status
+    if (tcStats.total === 0 || !hasFieldDefinitions || !hasResponses) {
+      ifaceStatus = 'pending'
+      pendingInterfaces++
+    } else if (apiUnresolved > 0) {
+      ifaceStatus = 'failed'
+      failedInterfaces++
+    } else if (tcStats.executed === tcStats.total && tcStats.passed === tcStats.total) {
+      ifaceStatus = 'passed'
+      passedInterfaces++
+    } else if (tcStats.pending > 0) {
+      ifaceStatus = 'pending'
+      pendingInterfaces++
+    } else {
+      ifaceStatus = 'failed'
+      failedInterfaces++
+    }
 
     return {
       interfaceId: api.id,
       interfaceName: api.name,
-      status: api.status,
-      totalTestCases: api.testCases.length,
-      passedTestCases: passedTC,
+      status: ifaceStatus,
+      totalTestCases: tcStats.total,
+      executedTestCases: tcStats.executed,
+      passedTestCases: tcStats.passed,
+      pendingTestCases: tcStats.pending,
+      unresolvedIssues: apiUnresolved,
+      totalIssues: api.issues.length,
+      hasFieldDefinitions,
+      hasResponses,
       issues: api.issues
     }
   })
+
+  let acceptanceConclusion: AcceptanceReport['acceptanceConclusion'] = 'pending'
+  let conclusionReason = ''
+
+  if (product.interfaces.length === 0) {
+    acceptanceConclusion = 'pending'
+    conclusionReason = '当前产品尚未创建任何接口，请先在产品详情中录入接口'
+  } else if (pendingInterfaces === product.interfaces.length) {
+    acceptanceConclusion = 'pending'
+    conclusionReason = `全部 ${product.interfaces.length} 个接口均未完成完整测试（缺少字段定义/请求响应/未执行用例），暂无法判定`
+  } else if (unresolvedIssues === 0 && passedInterfaces + failedInterfaces > 0 && failedInterfaces === 0) {
+    acceptanceConclusion = 'accepted'
+    conclusionReason = `共 ${passedInterfaces}/${product.interfaces.length} 个接口通过，所有测试用例均执行且全部通过，问题清单无未解决项`
+  } else if (unresolvedIssues > 0 || failedInterfaces > 0) {
+    acceptanceConclusion = 'rejected'
+    const parts = []
+    if (failedInterfaces > 0) parts.push(`${failedInterfaces} 个接口未通过`)
+    if (unresolvedIssues > 0) parts.push(`存在 ${unresolvedIssues} 个未解决问题`)
+    if (pendingInterfaces > 0) parts.push(`${pendingInterfaces} 个接口待完成测试`)
+    conclusionReason = parts.join('；')
+  } else {
+    acceptanceConclusion = 'pending'
+    conclusionReason = '部分接口仍在测试中，验收未结束'
+  }
 
   return {
     productId: product.id,
     productName: product.name,
     generatedAt: new Date().toISOString(),
     totalInterfaces: product.interfaces.length,
-    passedInterfaces: passed,
-    failedInterfaces: failed,
-    pendingInterfaces: pending,
+    passedInterfaces,
+    failedInterfaces,
+    pendingInterfaces,
     totalIssues,
     unresolvedIssues,
+    executedTestCases,
+    passedTestCases,
+    totalTestCases,
+    acceptanceConclusion,
+    conclusionReason,
     interfaces: interfaceDetails
   }
 }

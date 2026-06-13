@@ -36,6 +36,9 @@ export interface TestCase {
   fieldDefinitions: FieldDefinition[]
   createdAt: string
   updatedAt: string
+  lastExecutedAt?: string
+  lastCheckPassed?: boolean
+  executionStatus?: 'idle' | 'executed' | 'checked'
 }
 
 export interface ResponseRecord {
@@ -51,6 +54,16 @@ export interface ResponseRecord {
   error?: string
 }
 
+export interface RetestRecord {
+  timestamp: string
+  wasResolved: boolean
+  nowResolved: boolean
+  previousActual?: string
+  newActual?: string
+  previousExpected?: string
+  comment?: string
+}
+
 export interface IssueItem {
   id: string
   type: 'missing_field' | 'wrong_type' | 'wrong_enum' | 'sensitive_data' | 'timeout' | 'status_error' | 'other'
@@ -63,6 +76,8 @@ export interface IssueItem {
   retestCount: number
   lastRetestAt?: string
   remark?: string
+  retestHistory?: RetestRecord[]
+  checkSignature?: string
 }
 
 export interface ApiInterface {
@@ -112,12 +127,23 @@ export interface AcceptanceReport {
   pendingInterfaces: number
   totalIssues: number
   unresolvedIssues: number
+  executedTestCases: number
+  passedTestCases: number
+  totalTestCases: number
+  acceptanceConclusion: 'accepted' | 'rejected' | 'pending'
+  conclusionReason: string
   interfaces: Array<{
     interfaceId: string
     interfaceName: string
     status: 'pending' | 'testing' | 'passed' | 'failed'
     totalTestCases: number
+    executedTestCases: number
     passedTestCases: number
+    pendingTestCases: number
+    unresolvedIssues: number
+    totalIssues: number
+    hasFieldDefinitions: boolean
+    hasResponses: boolean
     issues: IssueItem[]
   }>
 }

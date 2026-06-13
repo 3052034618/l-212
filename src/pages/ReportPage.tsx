@@ -36,7 +36,8 @@ import {
   exportReportToExcel,
   exportIssuesToExcel,
   getIssueTypeLabel,
-  getSeverityLabel
+  getSeverityLabel,
+  computeTestCaseStats
 } from '@/lib/exportUtils'
 import type { Product, AcceptanceReport } from '@/types'
 
@@ -360,13 +361,19 @@ const ReportPage: React.FC = () => {
         {report ? (
           <div>
             <Alert
-              type={report.unresolvedIssues === 0 ? 'success' : 'warning'}
+              type={report.acceptanceConclusion === 'accepted' ? 'success' : report.acceptanceConclusion === 'rejected' ? 'error' : 'warning'}
               showIcon
-              message={`${report.productName} 验收结论：${report.unresolvedIssues === 0 ? '✅ 通过验收' : '⚠️ 存在待解决问题，请完成修复后复测'}`}
+              message={`${report.productName} 验收结论：${report.acceptanceConclusion === 'accepted' ? '✅ 通过验收' : report.acceptanceConclusion === 'rejected' ? '❌ 未通过验收' : '⏳ 验收中'}`}
               description={
-                <Space>
-                  <span>接口: {report.passedInterfaces}/{report.totalInterfaces} 通过</span>
-                  <span>问题: {report.unresolvedIssues}/{report.totalIssues} 待解决</span>
+                <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                  <Space>
+                    <span>接口: {report.passedInterfaces}/{report.totalInterfaces} 通过（{report.pendingInterfaces} 待测试）</span>
+                    <span>测试用例: 已执行 {report.executedTestCases}/{report.totalTestCases}，通过 {report.passedTestCases}</span>
+                    <span>问题: {report.unresolvedIssues}/{report.totalIssues} 待解决</span>
+                  </Space>
+                  {report.conclusionReason && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>说明：{report.conclusionReason}</Text>
+                  )}
                 </Space>
               }
               style={{ marginBottom: 16 }}
@@ -427,10 +434,12 @@ const ReportPage: React.FC = () => {
 
             <Divider orientation="left">接口明细</Divider>
             <Collapse
-              items={report.interfaces.map((iface) => ({
+              items={report.interfaces.map((iface) => {
+                const tcStats = computeTestCaseStats(currentProduct?.interfaces.find(i => i.id === iface.interfaceId)?.testCases || [])
+                return {
                 key: iface.interfaceId,
                 label: (
-                  <Space>
+                  <Space wrap>
                     <Tag color={
                       iface.status === 'passed' ? 'success' :
                       iface.status === 'failed' ? 'error' : 'processing'
@@ -439,8 +448,15 @@ const ReportPage: React.FC = () => {
                     </Tag>
                     <span style={{ fontWeight: 500 }}>{iface.interfaceName}</span>
                     <span style={{ color: '#8c8c8c', fontSize: 12 }}>
-                      测试用例 {iface.totalTestCases} 个
+                      用例 已执行{tcStats.executed}/{tcStats.total}，通过{tcStats.passed}
+                      {tcStats.pending > 0 && <Tag color="default" style={{ marginLeft: 4 }}>待执行{tcStats.pending}</Tag>}
                     </span>
+                    {!iface.hasFieldDefinitions && (
+                      <Tag color="orange">未配置字段定义</Tag>
+                    )}
+                    {!iface.hasResponses && (
+                      <Tag color="orange">无响应记录</Tag>
+                    )}
                     <span style={{ color: '#8c8c8c', fontSize: 12 }}>
                       问题 <Tag color={iface.issues.filter(i => !i.resolved).length > 0 ? 'red' : 'green'}>
                         {iface.issues.filter(i => !i.resolved).length}/{iface.issues.length}
@@ -495,7 +511,7 @@ const ReportPage: React.FC = () => {
                     )}
                   />
                 )
-              }))}
+              }})}
             />
           </div>
         ) : (

@@ -300,6 +300,67 @@ export const updateFieldDefinitions = async (
   await updateInterface(productId, interfaceId, { fieldDefinitions: fields })
 }
 
+export const syncIssuesFromCheck = async (
+  productId: string,
+  interfaceId: string,
+  newIssues: IssueItem[]
+): Promise<{ added: number; removed: number; kept: number }> => {
+  const db = getDatabase()
+  const product = db.products.find((p) => p.id === productId)
+  const api = product?.interfaces.find((i) => i.id === interfaceId)
+  if (!api || !product) return { added: 0, removed: 0, kept: 0 }
+
+  const fieldRelatedTypes: IssueItem['type'][] = [
+    'missing_field',
+    'wrong_type',
+    'wrong_enum',
+    'sensitive_data'
+  ]
+
+  const newSigSet = new Set(
+    newIssues
+      .filter((i) => fieldRelatedTypes.includes(i.type))
+      .map((i) => i.checkSignature)
+      .filter(Boolean) as string[]
+  )
+
+  let removed = 0
+  const preservedIssues: IssueItem[] = []
+  for (const existing of api.issues) {
+    if (!fieldRelatedTypes.includes(existing.type)) {
+      preservedIssues.push(existing)
+      continue
+    }
+    const sig =
+      existing.checkSignature ||
+      (existing.type + '::' + (existing.fieldPath || '__global__'))
+    if (newSigSet.has(sig)) {
+      preservedIssues.push(existing)
+    } else {
+      removed++
+    }
+  }
+
+  const existingSigs = new Set(
+    preservedIssues.map(
+      (i) => i.checkSignature || (i.type + '::' + (i.fieldPath || '__global__'))
+    )
+  )
+  let added = 0
+  for (const ni of newIssues) {
+    const sig = ni.checkSignature
+    if (sig && !existingSigs.has(sig)) {
+      preservedIssues.unshift(ni)
+      added++
+    }
+  }
+
+  api.issues = preservedIssues
+  product.updatedAt = new Date().toISOString()
+  await saveDatabase()
+  return { added, removed, kept: preservedIssues.length - added }
+}
+
 export const importJson = async (jsonStr: string): Promise<Product[]> => {
   const data = JSON.parse(jsonStr)
   const db = getDatabase()
