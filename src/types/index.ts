@@ -146,6 +146,9 @@ export interface AcceptanceReport {
     totalIssues: number
     hasFieldDefinitions: boolean
     hasResponses: boolean
+    lastTestedAt?: string
+    lastRetestedAt?: string
+    oldestUnresolvedDays?: number
     issues: IssueItem[]
   }>
 }

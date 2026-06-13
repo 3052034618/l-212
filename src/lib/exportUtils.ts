@@ -83,7 +83,10 @@ export const exportReportToExcel = async (report: AcceptanceReport) => {
     已通过用例数: iface.passedTestCases,
     未执行用例数: iface.pendingTestCases,
     问题总数: iface.totalIssues,
-    未解决问题数: iface.unresolvedIssues
+    未解决问题数: iface.unresolvedIssues,
+    最近试调时间: iface.lastTestedAt ? new Date(iface.lastTestedAt).toLocaleString('zh-CN') : '未试调',
+    最近复测时间: iface.lastRetestedAt ? new Date(iface.lastRetestedAt).toLocaleString('zh-CN') : '未复测',
+    '最久未跟进(天)': iface.oldestUnresolvedDays !== undefined && iface.oldestUnresolvedDays >= 0 ? iface.oldestUnresolvedDays : '无未解决'
   }))
 
   const issueData: any[] = []
@@ -165,16 +168,42 @@ export interface InterfaceEvaluation {
   totalIssues: number
   hasFieldDefinitions: boolean
   hasResponses: boolean
+  lastTestedAt?: string
+  lastRetestedAt?: string
+  oldestUnresolvedDays?: number
 }
 
 export const evaluateInterface = (api: ApiInterface): InterfaceEvaluation => {
   const tcStats = computeTestCaseStats(api.testCases, {
     interfaceFieldDefinitions: api.fieldDefinitions
   })
-  const apiUnresolved = api.issues.filter((i) => !i.resolved).length
+  const unresolvedList = api.issues.filter((i) => !i.resolved)
+  const apiUnresolved = unresolvedList.length
   const hasFieldDefinitions = (api.fieldDefinitions && api.fieldDefinitions.length > 0) ||
     api.testCases.some((t) => t.fieldDefinitions && t.fieldDefinitions.length > 0)
   const hasResponses = api.responses.length > 0
+
+  const lastTestedAt = hasResponses ? api.responses[0].timestamp : undefined
+
+  let lastRetestedAt: string | undefined
+  for (const issue of api.issues) {
+    if (issue.lastRetestAt) {
+      if (!lastRetestedAt || issue.lastRetestAt > lastRetestedAt) {
+        lastRetestedAt = issue.lastRetestAt
+      }
+    }
+  }
+
+  let oldestUnresolvedDays: number | undefined
+  if (unresolvedList.length > 0) {
+    const now = Date.now()
+    let oldest = now
+    for (const issue of unresolvedList) {
+      const t = new Date(issue.createdAt || issue.timestamp || issue.updatedAt || now).getTime()
+      if (t < oldest) oldest = t
+    }
+    oldestUnresolvedDays = Math.floor((now - oldest) / (1000 * 60 * 60 * 24))
+  }
 
   let status: 'passed' | 'failed' | 'pending' = 'pending'
   if (tcStats.total === 0 || !hasFieldDefinitions || !hasResponses) {
@@ -198,7 +227,10 @@ export const evaluateInterface = (api: ApiInterface): InterfaceEvaluation => {
     unresolvedIssues: apiUnresolved,
     totalIssues: api.issues.length,
     hasFieldDefinitions,
-    hasResponses
+    hasResponses,
+    lastTestedAt,
+    lastRetestedAt,
+    oldestUnresolvedDays
   }
 }
 
@@ -236,6 +268,9 @@ export const generateReport = (product: Product): AcceptanceReport => {
       totalIssues: evalResult.totalIssues,
       hasFieldDefinitions: evalResult.hasFieldDefinitions,
       hasResponses: evalResult.hasResponses,
+      lastTestedAt: evalResult.lastTestedAt,
+      lastRetestedAt: evalResult.lastRetestedAt,
+      oldestUnresolvedDays: evalResult.oldestUnresolvedDays,
       issues: api.issues
     }
   })

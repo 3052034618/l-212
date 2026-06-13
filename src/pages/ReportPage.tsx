@@ -476,49 +476,110 @@ const ReportPage: React.FC = () => {
                     </Button>
                   </Space>
                 ),
-                children: iface.issues.length === 0 ? (
-                  <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无问题" />
-                ) : (
-                  <List
-                    size="small"
-                    dataSource={iface.issues}
-                    renderItem={(issue) => (
-                      <List.Item
-                        style={{
-                          padding: '10px 12px',
-                          borderRadius: 6,
-                          marginBottom: 6,
-                          background: issue.resolved ? '#f6ffed' : '#fff7e6'
-                        }}
-                      >
-                        <Space style={{ width: '100%' }}>
-                          <Tag color={
-                            issue.severity === 'critical' ? 'red' :
-                            issue.severity === 'high' ? 'orange' :
-                            issue.severity === 'medium' ? 'blue' : 'default'
-                          }>
-                            {getSeverityLabel(issue.severity)}
-                          </Tag>
-                          <Tag>{getIssueTypeLabel(issue.type)}</Tag>
-                          {issue.resolved
-                            ? <Tag color="success">已解决</Tag>
-                            : <Tag color="processing">未解决</Tag>
-                          }
-                          {issue.fieldPath && <code style={{ fontSize: 12, color: '#722ed1' }}>{issue.fieldPath}</code>}
-                          <span style={{ flex: 1, color: '#262626' }}>{issue.description}</span>
-                          <Tooltip title={issue.remark}>
-                            <Text type="secondary" style={{ fontSize: 12 }}>
-                              {issue.expected ? `期望:${issue.expected}` : ''}
-                              {issue.actual ? ` 实际:${issue.actual}` : ''}
-                            </Text>
-                          </Tooltip>
-                          <Text type="secondary" style={{ fontSize: 11 }}>
-                            复测{issue.retestCount}次
-                          </Text>
-                        </Space>
-                      </List.Item>
+                children: (
+                  <div>
+                    <Row gutter={12} style={{ marginBottom: 12 }}>
+                      <Col span={6}>
+                        <Card size="small" style={{ background: '#fafafa' }}>
+                          <Statistic
+                            title="最近试调"
+                            value={iface.lastTestedAt
+                              ? new Date(iface.lastTestedAt).toLocaleString('zh-CN')
+                              : '未试调'}
+                            valueStyle={{ fontSize: 12, color: iface.lastTestedAt ? '#262626' : '#8c8c8c' }}
+                          />
+                        </Card>
+                      </Col>
+                      <Col span={6}>
+                        <Card size="small" style={{ background: '#fafafa' }}>
+                          <Statistic
+                            title="最近复测"
+                            value={iface.lastRetestedAt
+                              ? new Date(iface.lastRetestedAt).toLocaleString('zh-CN')
+                              : '未复测'}
+                            valueStyle={{ fontSize: 12, color: iface.lastRetestedAt ? '#262626' : '#8c8c8c' }}
+                          />
+                        </Card>
+                      </Col>
+                      <Col span={6}>
+                        <Card size="small" style={{ background: '#fafafa' }}>
+                          <Statistic
+                            title="最久未跟进"
+                            value={iface.oldestUnresolvedDays !== undefined && iface.oldestUnresolvedDays >= 0
+                              ? `${iface.oldestUnresolvedDays} 天`
+                              : '无未解决'}
+                            valueStyle={{
+                              fontSize: 12,
+                              color: (iface.oldestUnresolvedDays ?? 0) > 3 ? '#ff4d4f' :
+                                     (iface.oldestUnresolvedDays ?? 0) > 0 ? '#fa8c16' : '#52c41a'
+                            }}
+                            suffix={iface.oldestUnresolvedDays !== undefined && iface.oldestUnresolvedDays >= 0 ? '' : ''}
+                          />
+                        </Card>
+                      </Col>
+                      <Col span={6}>
+                        <Card size="small" style={{ background: '#fafafa' }}>
+                          <Statistic
+                            title="待解决问题"
+                            value={iface.issues.filter(i => !i.resolved).length}
+                            valueStyle={{
+                              fontSize: 20,
+                              color: iface.issues.filter(i => !i.resolved).length > 0 ? '#ff4d4f' : '#52c41a'
+                            }}
+                          />
+                        </Card>
+                      </Col>
+                    </Row>
+                    {iface.issues.length === 0 ? (
+                      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无问题" />
+                    ) : (
+                      <List
+                        size="small"
+                        dataSource={iface.issues}
+                        renderItem={(issue) => (
+                          <List.Item
+                            style={{
+                              padding: '10px 12px',
+                              borderRadius: 6,
+                              marginBottom: 4,
+                              background: issue.resolved ? '#f6ffed' : '#fff',
+                              border: issue.resolved ? '1px solid #b7eb8f' : '1px solid #f0f0f0'
+                            }}
+                          >
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Space>
+                                <Tag color={
+                                  issue.severity === 'critical' ? 'red' :
+                                  issue.severity === 'high' ? 'orange' :
+                                  issue.severity === 'medium' ? 'blue' : 'default'
+                                }>
+                                  {getSeverityLabel(issue.severity)}
+                                </Tag>
+                                <Tag>{getIssueTypeLabel(issue.type)}</Tag>
+                                {issue.resolved ? (
+                                  <Tag color="success">已解决</Tag>
+                                ) : (
+                                  <Tag color="processing">未解决</Tag>
+                                )}
+                                {issue.fieldPath && (
+                                  <Tag color="purple">{issue.fieldPath}</Tag>
+                                )}
+                              </Space>
+                              <div style={{ fontWeight: 500 }}>{issue.description}</div>
+                              <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+                                期望: {issue.expected || '-'} | 实际: {issue.actual || '-'}
+                              </div>
+                              {issue.remark && (
+                                <div style={{ fontSize: 11, color: '#595959', marginTop: 4 }}>
+                                  备注: {issue.remark}
+                                </div>
+                              )}
+                            </Space>
+                          </List.Item>
+                        )}
+                      />
                     )}
-                  />
+                  </div>
                 )
               }})}
             />

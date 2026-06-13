@@ -405,3 +405,133 @@ export const extractFieldsFromData = (
 
   return definitions
 }
+
+export interface FieldDiffItem {
+  path: string
+  type: 'added' | 'removed' | 'changed' | 'type_changed'
+  oldValue?: any
+  newValue?: any
+  oldType?: string
+  newType?: string
+}
+
+export interface ResponseDiffResult {
+  status: { oldStatus: number; newStatus: number; changed: boolean }
+  responseTime: { oldMs: number; newMs: number; changed: boolean; deltaMs: number }
+  size: { oldSize: number; newSize: number; changed: boolean; deltaSize: number }
+  fields: FieldDiffItem[]
+  addedCount: number
+  removedCount: number
+  changedCount: number
+  typeChangedCount: number
+}
+
+const flattenObj = (obj: any, prefix: string = '', result: Record<string, any> = {}): Record<string, any> => {
+  if (obj === null || obj === undefined) {
+    if (prefix) result[prefix] = obj
+    return result
+  }
+  if (typeof obj !== 'object') {
+    result[prefix] = obj
+    return result
+  }
+  if (Array.isArray(obj)) {
+    result[prefix || '(root)'] = `Array(${obj.length})`
+    if (obj.length > 0 && typeof obj[0] === 'object' && obj[0] !== null) {
+      flattenObj(obj[0], `${prefix || '(root)'}[0]`, result)
+    }
+    return result
+  }
+  Object.keys(obj).forEach((key) => {
+    const path = prefix ? `${prefix}.${key}` : key
+    const val = obj[key]
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      flattenObj(val, path, result)
+    } else {
+      result[path] = val
+    }
+  })
+  return result
+}
+
+export const compareResponses = (oldResp: any, newResp: any): ResponseDiffResult => {
+  const oldStatus = oldResp?.status ?? 0
+  const newStatus = newResp?.status ?? 0
+  const oldMs = oldResp?.responseTime ?? 0
+  const newMs = newResp?.responseTime ?? 0
+  const oldSize = oldResp?.size ?? 0
+  const newSize = newResp?.size ?? 0
+
+  const oldFlat = flattenObj(oldResp?.data)
+  const newFlat = flattenObj(newResp?.data)
+
+  const allKeys = new Set([...Object.keys(oldFlat), ...Object.keys(newFlat)])
+  const fields: FieldDiffItem[] = []
+
+  let addedCount = 0
+  let removedCount = 0
+  let changedCount = 0
+  let typeChangedCount = 0
+
+  const sortedKeys = Array.from(allKeys).sort()
+  for (const key of sortedKeys) {
+    const inOld = Object.prototype.hasOwnProperty.call(oldFlat, key)
+    const inNew = Object.prototype.hasOwnProperty.call(newFlat, key)
+
+    if (inOld && !inNew) {
+      fields.push({
+        path: key,
+        type: 'removed',
+        oldValue: oldFlat[key],
+        oldType: getJsType(oldFlat[key])
+      })
+      removedCount++
+    } else if (!inOld && inNew) {
+      fields.push({
+        path: key,
+        type: 'added',
+        newValue: newFlat[key],
+        newType: getJsType(newFlat[key])
+      })
+      addedCount++
+    } else {
+      const oldVal = oldFlat[key]
+      const newVal = newFlat[key]
+      const oldType = getJsType(oldVal)
+      const newType = getJsType(newVal)
+
+      if (oldType !== newType) {
+        fields.push({
+          path: key,
+          type: 'type_changed',
+          oldValue: oldVal,
+          newValue: newVal,
+          oldType,
+          newType
+        })
+        typeChangedCount++
+      } else if (oldVal !== newVal) {
+        fields.push({
+          path: key,
+          type: 'changed',
+          oldValue: oldVal,
+          newValue: newVal,
+          oldType,
+          newType
+        })
+        changedCount++
+      }
+    }
+  }
+
+  return {
+    status: { oldStatus, newStatus, changed: oldStatus !== newStatus },
+    responseTime: { oldMs, newMs, changed: oldMs !== newMs, deltaMs: newMs - oldMs },
+    size: { oldSize, newSize, changed: oldSize !== newSize, deltaSize: newSize - oldSize },
+    fields,
+    addedCount,
+    removedCount,
+    changedCount,
+    typeChangedCount
+  }
+}

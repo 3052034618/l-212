@@ -66,7 +66,9 @@ import {
   extractFieldsFromData,
   checkSingleIssueResolved,
   buildCheckSignature,
-  type FieldCheckResult
+  compareResponses,
+  type FieldCheckResult,
+  type ResponseDiffResult
 } from '@/lib/fieldValidator'
 import { exportIssuesToExcel, getIssueTypeLabel, getSeverityLabel } from '@/lib/exportUtils'
 import type {
@@ -149,6 +151,15 @@ const InterfaceWorkbench: React.FC = () => {
   )
   const [checkResults, setCheckResults] = useState<FieldCheckResult[]>([])
   const [currentResponse, setCurrentResponse] = useState<ResponseRecord | null>(lastResponse)
+  const [diffRespId1, setDiffRespId1] = useState<string>('')
+  const [diffRespId2, setDiffRespId2] = useState<string>('')
+  const [diffTabKey, setDiffTabKey] = useState<string>('')
+  const [batchRetestResult, setBatchRetestResult] = useState<{
+    show: boolean
+    resolved: IssueItem[]
+    unresolved: IssueItem[]
+    skipped: IssueItem[]
+  } | null>(null)
   const [tcName, setTcName] = useState('')
   const [tcDesc, setTcDesc] = useState('')
   const [saveAsNew, setSaveAsNew] = useState(!tc)
@@ -621,6 +632,95 @@ const InterfaceWorkbench: React.FC = () => {
     }
   }
 
+  const handleBatchRetest = async () => {
+    const latestResponse = api.responses.length > 0 ? api.responses[0] : null
+    if (!latestResponse) {
+      message.warning('该接口还没有任何请求记录，请先发送请求再复测')
+      return
+    }
+    const unresolved = api.issues.filter(i => !i.resolved)
+    if (unresolved.length === 0) {
+      message.info('没有待解决的问题，无需批量复测')
+      return
+    }
+
+    const isFieldIssue = (t: IssueItem['type']) =>
+      ['missing_field', 'wrong_type', 'wrong_enum', 'sensitive_data'].includes(t)
+
+    const hasFieldDefs = fieldDefs.length > 0
+
+    const resolved: IssueItem[] = []
+    const stillUnresolved: IssueItem[] = []
+    const skipped: IssueItem[] = []
+
+    for (const issue of unresolved) {
+      if (isFieldIssue(issue.type) && !hasFieldDefs) {
+        skipped.push(issue)
+        continue
+      }
+
+      const checkResult = checkSingleIssueResolved(issue, fieldDefs, {
+        responseData: latestResponse.data,
+        status: latestResponse.status,
+        statusText: latestResponse.statusText,
+        responseTime: latestResponse.responseTime,
+        error: latestResponse.error
+      })
+      const now = new Date().toISOString()
+
+      const wasResolved = issue.resolved
+      const nowResolved = checkResult.resolved
+      const changed = wasResolved !== nowResolved
+
+      let comment = ''
+      if (changed) {
+        comment = nowResolved ? '批量复测通过，问题已修复' : '批量复测未通过，问题仍然存在'
+      } else {
+        comment = nowResolved ? '批量复测确认：问题已修复' : '批量复测确认：问题仍然存在'
+      }
+
+      const record: RetestRecord = {
+        timestamp: now,
+        wasResolved,
+        nowResolved,
+        previousActual: issue.actual,
+        newActual: checkResult.newActual,
+        previousExpected: issue.expected,
+        comment,
+        responseId: latestResponse.id,
+        responseTimestamp: latestResponse.timestamp
+      }
+
+      const history = issue.retestHistory ? [...issue.retestHistory, record] : [record]
+      const patch: Partial<IssueItem> = {
+        retestCount: issue.retestCount + 1,
+        lastRetestAt: now,
+        resolved: nowResolved,
+        retestHistory: history
+      }
+      if (checkResult.newActual !== undefined) {
+        patch.actual = checkResult.newActual
+      }
+
+      await updateIssue(product.id, api.id, issue.id, patch)
+
+      if (nowResolved) {
+        resolved.push({ ...issue, ...patch } as IssueItem)
+      } else {
+        stillUnresolved.push({ ...issue, ...patch } as IssueItem)
+      }
+    }
+
+    refresh()
+    setBatchRetestResult({ show: true, resolved, unresolved: stillUnresolved, skipped })
+
+    const parts = [`批量复测完成: ${unresolved.length} 个问题`]
+    if (resolved.length > 0) parts.push(`✅ 已修复 ${resolved.length}`)
+    if (stillUnresolved.length > 0) parts.push(`⚠️ 仍存在 ${stillUnresolved.length}`)
+    if (skipped.length > 0) parts.push(`⏭️ 无法判断 ${skipped.length}`)
+    message.success(parts.join('，'))
+  }
+
   const handleExportIssues = async () => {
     const path = await exportIssuesToExcel(api.issues, product.name, api.name)
     if (path) message.success(`已导出到：${path}`)
@@ -1003,7 +1103,17 @@ const InterfaceWorkbench: React.FC = () => {
                         style={{ marginBottom: 16 }}
                       />
                     )}
-                    <Tabs defaultActiveKey="body" size="small">
+                    <Tabs
+                      activeKey={diffTabKey || 'body'}
+                      onChange={(k) => {
+                        setDiffTabKey(k)
+                        if (k === 'diff' && api.responses.length >= 2) {
+                          if (!diffRespId1) setDiffRespId1(api.responses[0].id)
+                          if (!diffRespId2) setDiffRespId2(api.responses[1].id)
+                        }
+                      }}
+                      size="small"
+                    >
                       <TabPane tab="响应 Body" key="body">
                         {typeof currentResponse.data === 'object' && currentResponse.data !== null ? (
                           <JsonViewer data={currentResponse.data} />
@@ -1013,6 +1123,177 @@ const InterfaceWorkbench: React.FC = () => {
                       </TabPane>
                       <TabPane tab={`响应 Headers (${Object.keys(currentResponse.headers || {}).length})`} key="headers">
                         <JsonViewer data={currentResponse.headers || {}} />
+                      </TabPane>
+                      <TabPane
+                        tab={
+                          <Space>
+                            响应对比
+                            {api.responses.length >= 2 && (
+                              <Tag color="blue" style={{ marginLeft: 4 }}>有差异</Tag>
+                            )}
+                          </Space>
+                        }
+                        key="diff"
+                        disabled={api.responses.length < 2}
+                      >
+                        {api.responses.length < 2 ? (
+                          <Empty
+                            description="至少需要 2 条响应记录才能对比，请先发送两次以上请求"
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                          />
+                        ) : (
+                          <div>
+                            <Row gutter={16} style={{ marginBottom: 16 }}>
+                              <Col span={12}>
+                                <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
+                                  响应 A（旧）
+                                </div>
+                                <Select
+                                  style={{ width: '100%' }}
+                                  size="small"
+                                  value={diffRespId1 || api.responses[1].id}
+                                  onChange={(v) => setDiffRespId1(v)}
+                                  options={api.responses.map((r) => ({
+                                    value: r.id,
+                                    label: `${new Date(r.timestamp).toLocaleString('zh-CN')}  [${r.status}] ${r.responseTime}ms`
+                                  }))}
+                                />
+                              </Col>
+                              <Col span={12}>
+                                <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
+                                  响应 B（新）
+                                </div>
+                                <Select
+                                  style={{ width: '100%' }}
+                                  size="small"
+                                  value={diffRespId2 || api.responses[0].id}
+                                  onChange={(v) => setDiffRespId2(v)}
+                                  options={api.responses.map((r) => ({
+                                    value: r.id,
+                                    label: `${new Date(r.timestamp).toLocaleString('zh-CN')}  [${r.status}] ${r.responseTime}ms`
+                                  }))}
+                                />
+                              </Col>
+                            </Row>
+                            {(() => {
+                              const r1 = api.responses.find(r => r.id === (diffRespId1 || api.responses[1].id))
+                              const r2 = api.responses.find(r => r.id === (diffRespId2 || api.responses[0].id))
+                              if (!r1 || !r2) return null
+                              const diff = compareResponses(r1, r2)
+                              const totalDiffs = diff.addedCount + diff.removedCount + diff.changedCount + diff.typeChangedCount
+                              return (
+                                <div>
+                                  <Row gutter={12} style={{ marginBottom: 16 }}>
+                                    <Col span={6}>
+                                      <Card size="small">
+                                        <Statistic
+                                          title="状态码变化"
+                                          value={`${diff.status.oldStatus} → ${diff.status.newStatus}`}
+                                          valueStyle={{
+                                            fontSize: 16,
+                                            color: diff.status.changed ? (diff.status.newStatus < 400 ? '#52c41a' : '#ff4d4f') : '#8c8c8c'
+                                          }}
+                                        />
+                                      </Card>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Card size="small">
+                                        <Statistic
+                                          title="响应时间变化"
+                                          value={`${diff.responseTime.oldMs} → ${diff.responseTime.newMs} ms`}
+                                          valueStyle={{
+                                            fontSize: 14,
+                                            color: diff.responseTime.deltaMs > 500 ? '#fa8c16' : '#52c41a'
+                                          }}
+                                          prefix={diff.responseTime.deltaMs > 0 ? <ArrowUpOutlined /> : <ArrowDownOutlined />}
+                                        />
+                                      </Card>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Card size="small">
+                                        <Statistic
+                                          title="响应大小变化"
+                                          value={`${diff.size.oldSize} → ${diff.size.newSize} B`}
+                                          valueStyle={{ fontSize: 14, color: '#1677ff' }}
+                                        />
+                                      </Card>
+                                    </Col>
+                                    <Col span={6}>
+                                      <Card size="small">
+                                        <Statistic
+                                          title="字段差异总数"
+                                          value={totalDiffs}
+                                          valueStyle={{ color: totalDiffs > 0 ? '#fa8c16' : '#52c41a', fontSize: 24 }}
+                                        />
+                                      </Card>
+                                    </Col>
+                                  </Row>
+                                  {totalDiffs === 0 ? (
+                                    <Empty
+                                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                      description="两次响应完全一致，无字段差异"
+                                    />
+                                  ) : (
+                                    <List
+                                      size="small"
+                                      dataSource={diff.fields}
+                                      locale={{ emptyText: '无差异字段' }}
+                                      renderItem={(f) => (
+                                        <List.Item
+                                          style={{
+                                            padding: '6px 12px',
+                                            background: f.type === 'added' ? '#f6ffed' :
+                                              f.type === 'removed' ? '#fff1f0' :
+                                              f.type === 'type_changed' ? '#fff7e6' : '#fafafa',
+                                            borderLeft: `3px solid ${
+                                              f.type === 'added' ? '#52c41a' :
+                                              f.type === 'removed' ? '#ff4d4f' :
+                                              f.type === 'type_changed' ? '#fa8c16' : '#1677ff'
+                                            }`,
+                                            marginBottom: 4,
+                                            borderRadius: 4
+                                          }}
+                                        >
+                                          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                                            <Space style={{ width: '100%' }}>
+                                              <Tag color={
+                                                f.type === 'added' ? 'green' :
+                                                f.type === 'removed' ? 'red' :
+                                                f.type === 'type_changed' ? 'orange' : 'blue'
+                                              } style={{ margin: 0 }}>
+                                                {f.type === 'added' ? '新增字段' :
+                                                 f.type === 'removed' ? '删除字段' :
+                                                 f.type === 'type_changed' ? '类型变更' : '值变化'}
+                                              </Tag>
+                                              <code style={{ fontSize: 12, fontWeight: 500, color: '#262626' }}>
+                                                {f.path}
+                                              </code>
+                                            </Space>
+                                            <Space style={{ fontSize: 11, color: '#595959' }}>
+                                              {f.type === 'added' && (
+                                                <span>新值: <b>{JSON.stringify(f.newValue)}</b> ({f.newType})</span>
+                                              )}
+                                              {f.type === 'removed' && (
+                                                <span>旧值: <b>{JSON.stringify(f.oldValue)}</b> ({f.oldType})</span>
+                                              )}
+                                              {(f.type === 'changed' || f.type === 'type_changed') && (
+                                                <>
+                                                  <span>旧值: <b>{JSON.stringify(f.oldValue)}</b> ({f.oldType})</span>
+                                                  <ArrowRightOutlined />
+                                                  <span>新值: <b>{JSON.stringify(f.newValue)}</b> ({f.newType})</span>
+                                                </>
+                                              )}
+                                            </Space>
+                                          </Space>
+                                        </List.Item>
+                                      )}
+                                    />
+                                  )}
+                                </div>
+                              )
+                            })()}
+                          </div>
+                        )}
                       </TabPane>
                     </Tabs>
                   </div>
@@ -1170,6 +1451,13 @@ const InterfaceWorkbench: React.FC = () => {
                     <Button type="primary" icon={<PlusOutlined />} onClick={() => handleOpenIssue()}>
                       添加问题
                     </Button>
+                    <Button
+                      icon={<ThunderboltOutlined />}
+                      onClick={handleBatchRetest}
+                      disabled={unresolvedIssues.length === 0 || api.responses.length === 0}
+                    >
+                      批量复测 ({unresolvedIssues.length})
+                    </Button>
                     <Button icon={<ReloadOutlined />} onClick={() => refresh()}>
                       刷新
                     </Button>
@@ -1178,6 +1466,50 @@ const InterfaceWorkbench: React.FC = () => {
                     导出 Excel
                   </Button>
                 </div>
+                {batchRetestResult && batchRetestResult.show && (
+                  <Alert
+                    type="info"
+                    showIcon
+                    closable
+                    onClose={() => setBatchRetestResult(null)}
+                    style={{ marginBottom: 16 }}
+                    message={`批量复测结果：共 ${batchRetestResult.resolved.length + batchRetestResult.unresolved.length + batchRetestResult.skipped.length} 个问题，已修复 ${batchRetestResult.resolved.length}，仍存在 ${batchRetestResult.unresolved.length}，无法判断 ${batchRetestResult.skipped.length}`}
+                    description={
+                      <div style={{ marginTop: 8 }}>
+                        {batchRetestResult.resolved.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <Tag color="success">已修复 ({batchRetestResult.resolved.length})</Tag>
+                            <div style={{ marginTop: 4, fontSize: 11, color: '#52c41a' }}>
+                              {batchRetestResult.resolved.map(i => (
+                                <span key={i.id} style={{ marginRight: 8 }}>• {i.description}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {batchRetestResult.unresolved.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <Tag color="warning">仍存在 ({batchRetestResult.unresolved.length})</Tag>
+                            <div style={{ marginTop: 4, fontSize: 11, color: '#fa8c16' }}>
+                              {batchRetestResult.unresolved.map(i => (
+                                <span key={i.id} style={{ marginRight: 8 }}>• {i.description}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                        {batchRetestResult.skipped.length > 0 && (
+                          <div>
+                            <Tag color="default">无法判断 ({batchRetestResult.skipped.length})</Tag>
+                            <div style={{ marginTop: 4, fontSize: 11, color: '#8c8c8c' }}>
+                              {batchRetestResult.skipped.map(i => (
+                                <span key={i.id} style={{ marginRight: 8 }}>• {i.description}（无字段定义）</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    }
+                  />
+                )}
                 {api.issues.length === 0 ? (
                   <Empty description="暂无问题记录，发送请求后自动检测或手动添加" />
                 ) : (
@@ -1246,6 +1578,60 @@ const InterfaceWorkbench: React.FC = () => {
                             <strong>备注:</strong> {issue.remark}
                           </div>
                         )}
+                        {(() => {
+                          const lastRetest = issue.retestHistory && issue.retestHistory.length > 0
+                            ? issue.retestHistory[issue.retestHistory.length - 1]
+                            : null
+                          const resp = lastRetest?.responseId
+                            ? api.responses.find(r => r.id === lastRetest.responseId)
+                            : null
+                          if (!lastRetest) {
+                            return (
+                              <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 6 }}>
+                                <ClockCircleOutlined style={{ marginRight: 4 }} />
+                                尚未复测，点击右侧"复测"按钮基于最新请求结果验证
+                              </div>
+                            )
+                          }
+                          return (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: '#595959',
+                                marginTop: 6,
+                                padding: '4px 8px',
+                                background: '#f9f9f9',
+                                borderRadius: 4,
+                                display: 'flex',
+                                gap: 12,
+                                alignItems: 'center',
+                                flexWrap: 'wrap'
+                              }}
+                            >
+                              <span>
+                                <ReloadOutlined style={{ color: '#1677ff', marginRight: 4 }} />
+                                最近复测: {new Date(lastRetest.timestamp).toLocaleString('zh-CN')}
+                              </span>
+                              <span>
+                                基于请求: {lastRetest.responseTimestamp
+                                  ? new Date(lastRetest.responseTimestamp).toLocaleString('zh-CN')
+                                  : '-'}
+                              </span>
+                              {resp && (
+                                <>
+                                  <Tag color={resp.status < 400 ? 'green' : 'red'} style={{ margin: 0 }}>
+                                    状态 {resp.status}
+                                  </Tag>
+                                  <span>耗时 {resp.responseTime}ms</span>
+                                  {resp.error && <span style={{ color: '#ff4d4f' }}>错误: {resp.error}</span>}
+                                </>
+                              )}
+                              <Tag color={lastRetest.nowResolved ? 'success' : 'warning'} style={{ margin: 0 }}>
+                                {lastRetest.nowResolved ? '已修复' : '仍存在'}
+                              </Tag>
+                            </div>
+                          )
+                        })()}
                         {(issue.retestCount > 0 || issue.lastRetestAt || (issue.retestHistory && issue.retestHistory.length > 0)) && (
                           <div
                             style={{
