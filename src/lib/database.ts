@@ -304,11 +304,11 @@ export const syncIssuesFromCheck = async (
   productId: string,
   interfaceId: string,
   newIssues: IssueItem[]
-): Promise<{ added: number; removed: number; kept: number }> => {
+): Promise<{ added: number; removed: number; kept: number; reopened: number }> => {
   const db = getDatabase()
   const product = db.products.find((p) => p.id === productId)
   const api = product?.interfaces.find((i) => i.id === interfaceId)
-  if (!api || !product) return { added: 0, removed: 0, kept: 0 }
+  if (!api || !product) return { added: 0, removed: 0, kept: 0, reopened: 0 }
 
   const fieldRelatedTypes: IssueItem['type'][] = [
     'missing_field',
@@ -317,14 +317,16 @@ export const syncIssuesFromCheck = async (
     'sensitive_data'
   ]
 
-  const newSigSet = new Set(
-    newIssues
-      .filter((i) => fieldRelatedTypes.includes(i.type))
-      .map((i) => i.checkSignature)
-      .filter(Boolean) as string[]
-  )
+  const newIssuesBySig = new Map<string, IssueItem>()
+  for (const ni of newIssues) {
+    if (fieldRelatedTypes.includes(ni.type) && ni.checkSignature) {
+      newIssuesBySig.set(ni.checkSignature, ni)
+    }
+  }
+  const newSigSet = new Set(newIssuesBySig.keys())
 
   let removed = 0
+  let reopened = 0
   const preservedIssues: IssueItem[] = []
   for (const existing of api.issues) {
     if (!fieldRelatedTypes.includes(existing.type)) {
@@ -335,7 +337,36 @@ export const syncIssuesFromCheck = async (
       existing.checkSignature ||
       (existing.type + '::' + (existing.fieldPath || '__global__'))
     if (newSigSet.has(sig)) {
-      preservedIssues.push(existing)
+      const latest = newIssuesBySig.get(sig)!
+      const wasResolved = existing.resolved
+      const previousActual = existing.actual
+      const previousExpected = existing.expected
+      const merged: IssueItem = {
+        ...existing,
+        resolved: false,
+        description: latest.description,
+        expected: latest.expected,
+        actual: latest.actual,
+        severity: latest.severity,
+        checkSignature: latest.checkSignature
+      }
+      if (wasResolved) {
+        reopened++
+        merged.retestCount = (merged.retestCount || 0) + 1
+        merged.retestHistory = [
+          ...(merged.retestHistory || []),
+          {
+            timestamp: new Date().toISOString(),
+            wasResolved: true,
+            nowResolved: false,
+            previousActual,
+            newActual: latest.actual,
+            previousExpected,
+            comment: '字段校验复检：问题再次出现，已重新挂回待解决'
+          }
+        ]
+      }
+      preservedIssues.push(merged)
     } else {
       removed++
     }
@@ -358,7 +389,7 @@ export const syncIssuesFromCheck = async (
   api.issues = preservedIssues
   product.updatedAt = new Date().toISOString()
   await saveDatabase()
-  return { added, removed, kept: preservedIssues.length - added }
+  return { added, removed, kept: preservedIssues.length - added, reopened }
 }
 
 export const importJson = async (jsonStr: string): Promise<Product[]> => {

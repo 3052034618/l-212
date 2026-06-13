@@ -435,7 +435,10 @@ const ReportPage: React.FC = () => {
             <Divider orientation="left">接口明细</Divider>
             <Collapse
               items={report.interfaces.map((iface) => {
-                const tcStats = computeTestCaseStats(currentProduct?.interfaces.find(i => i.id === iface.interfaceId)?.testCases || [])
+                const relatedApi = currentProduct?.interfaces.find(i => i.id === iface.interfaceId)
+                const tcStats = computeTestCaseStats(relatedApi?.testCases || [], {
+                  interfaceFieldDefinitions: relatedApi?.fieldDefinitions
+                })
                 return {
                 key: iface.interfaceId,
                 label: (

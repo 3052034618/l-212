@@ -83,13 +83,42 @@ export const looksLikeRawSensitiveValue = (value: any): { likely: boolean; hint?
   const str = value.trim()
   if (!str) return { likely: false }
 
-  if (/^1[3-9][0-9]{9}$/.test(str)) return { likely: true, hint: '疑似原始手机号(11位)' }
-  if (/^1[3-9][0-9]-?[0-9]{4}-?[0-9]{4}$/.test(str)) return { likely: true, hint: '疑似原始手机号(带横杠)' }
-  if (/^[0-9]{17}[0-9Xx]$/.test(str)) return { likely: true, hint: '疑似原始18位身份证号' }
-  if (/^[0-9]{15}$/.test(str)) return { likely: true, hint: '疑似原始15位身份证号' }
-  if (/^[1-9][0-9]{5}$/.test(str) && value.length === 6) return { likely: true, hint: '疑似原始银行卡号/证件号(6位纯数字)' }
-  if (/^[0-9]{12,19}$/.test(str)) return { likely: true, hint: '疑似原始银行卡号' }
-  if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(str)) return { likely: true, hint: '疑似原始邮箱地址' }
+  if (/^1[3-9][0-9]{9}$/.test(str)) return { likely: true, hint: '原始手机号(11位中国大陆手机号)' }
+  if (/^1[3-9][0-9]-?[0-9]{4}-?[0-9]{4}$/.test(str) && /1[3-9]/.test(str)) {
+    return { likely: true, hint: '原始手机号(带横杠分隔)' }
+  }
+  if (/^[1-9][0-9]{5}(19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx]$/.test(str)) {
+    return { likely: true, hint: '原始18位身份证号(含出生日期校验)' }
+  }
+  if (/^[1-9][0-9]{5}[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}$/.test(str)) {
+    return { likely: true, hint: '原始15位身份证号(含出生日期校验)' }
+  }
+  if (/^[1-9][0-9]{5}$/.test(str)) {
+    if (/^(11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65|71|81|82)/.test(str)) {
+      return { likely: true, hint: '疑似身份证前6位地区码(6位纯数字)' }
+    }
+    return { likely: false }
+  }
+  if (/^[3-6][0-9]{12,18}$/.test(str)) {
+    let sum = 0
+    const digits = str.split('').map(Number)
+    for (let i = digits.length - 2, alt = true; i >= 0; i--, alt = !alt) {
+      let d = digits[i]
+      if (alt) {
+        d *= 2
+        if (d > 9) d -= 9
+      }
+      sum += d
+    }
+    const checkDigit = (10 - (sum % 10)) % 10
+    if (checkDigit === digits[digits.length - 1]) {
+      return { likely: true, hint: '原始银行卡号(Luhn校验通过)' }
+    }
+    return { likely: false }
+  }
+  if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(str)) {
+    return { likely: true, hint: '原始邮箱地址' }
+  }
 
   return { likely: false }
 }
@@ -199,7 +228,7 @@ export const checkFields = (
           if (rawCheck.likely) {
             passed = false
             status = 'fail'
-            const hint = `检测到疑似原始敏感值(${rawCheck.hint})，未做脱敏处理`
+            const hint = `检测到${rawCheck.hint}，未做脱敏处理`
             reason = reason ? reason + '; ' + hint : hint
             pushIssue(
               'sensitive_data',
@@ -207,17 +236,6 @@ export const checkFields = (
               '脱敏后的值 (如 138****1234)',
               displayValue,
               'high'
-            )
-          } else {
-            status = status === 'fail' ? 'fail' : 'warning'
-            const hint = `敏感字段返回非空值，建议人工复核是否已脱敏(掩码检测: 未识别)`
-            reason = reason ? reason + '; ' + hint : hint
-            pushIssue(
-              'sensitive_data',
-              `${def.name || def.path} 为敏感字段，返回值需人工确认是否已脱敏`,
-              '脱敏后的值 (如 *****)',
-              displayValue,
-              'medium'
             )
           }
         }
@@ -237,13 +255,66 @@ export const checkFields = (
   return { results, issues }
 }
 
+export interface RetestFullContext {
+  responseData: any
+  status?: number
+  statusText?: string
+  responseTime?: number
+  error?: string | null
+}
+
 export const checkSingleIssueResolved = (
   issue: IssueItem,
   definitions: FieldDefinition[],
-  responseData: any
+  ctx: RetestFullContext
 ): { resolved: boolean; newActual?: string; newExpected?: string } => {
-  if (issue.type === 'timeout' || issue.type === 'status_error' || issue.type === 'other') {
-    return { resolved: issue.resolved }
+  const { responseData, status, responseTime, error } = ctx
+
+  if (issue.type === 'status_error') {
+    if (error) {
+      return {
+        resolved: false,
+        newActual: `请求失败: ${error}`,
+        newExpected: '2xx/3xx 状态码或请求成功'
+      }
+    }
+    const isOk = status !== undefined && status >= 200 && status < 400
+    return {
+      resolved: isOk,
+      newActual: status !== undefined ? String(status) : '无状态码',
+      newExpected: '2xx 或 3xx'
+    }
+  }
+
+  if (issue.type === 'timeout') {
+    if (error && /timeout|timed.?out|超时/i.test(error)) {
+      return {
+        resolved: false,
+        newActual: `请求依然超时: ${error}`,
+        newExpected: '响应时间 <= 5000ms'
+      }
+    }
+    const ok = responseTime !== undefined && responseTime <= 5000
+    return {
+      resolved: ok,
+      newActual: responseTime !== undefined ? `${responseTime}ms` : '无响应时间',
+      newExpected: '响应时间 <= 5000ms'
+    }
+  }
+
+  if (issue.type === 'other') {
+    if (error) {
+      return {
+        resolved: false,
+        newActual: `依然存在异常: ${error}`,
+        newExpected: '请求成功'
+      }
+    }
+    return {
+      resolved: true,
+      newActual: '请求已正常返回',
+      newExpected: issue.expected || '请求成功'
+    }
   }
 
   const relatedDef = definitions.find((d) => d.path === issue.fieldPath)
@@ -255,8 +326,7 @@ export const checkSingleIssueResolved = (
   const result = results[0]
   if (!result) return { resolved: false }
 
-  const nowHasProblem = result.status === 'fail' ||
-    (result.status === 'warning' && issue.type === 'sensitive_data')
+  const nowHasProblem = result.status === 'fail'
 
   return {
     resolved: !nowHasProblem,

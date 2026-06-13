@@ -463,8 +463,9 @@ const InterfaceWorkbench: React.FC = () => {
     const pass = results.filter((r) => r.status === 'pass').length
     const parts = [`字段校验完成: ${pass}/${results.length} 通过`]
     if (syncResult.added > 0) parts.push(`新增问题 ${syncResult.added} 个`)
+    if (syncResult.reopened > 0) parts.push(`重新挂回待解决 ${syncResult.reopened} 个`)
     if (syncResult.removed > 0) parts.push(`自动清理已修复问题 ${syncResult.removed} 个`)
-    if (syncResult.added === 0 && syncResult.removed === 0) {
+    if (syncResult.added === 0 && syncResult.removed === 0 && syncResult.reopened === 0) {
       parts.push('问题清单无变化')
     }
     message.success(parts.join('；'))
@@ -551,22 +552,41 @@ const InterfaceWorkbench: React.FC = () => {
       message.warning('请先发送请求获取最新响应，再进行复测')
       return
     }
-    if (fieldDefs.length === 0) {
-      message.warning('还没有字段定义，无法基于字段进行复测')
+
+    const isFieldIssue = ['missing_field', 'wrong_type', 'wrong_enum', 'sensitive_data'].includes(issue.type)
+    if (isFieldIssue && fieldDefs.length === 0) {
+      message.warning('字段相关问题需要先配置字段定义再复测')
       return
     }
 
-    const checkResult = checkSingleIssueResolved(issue, fieldDefs, currentResponse.data)
+    const checkResult = checkSingleIssueResolved(issue, fieldDefs, {
+      responseData: currentResponse.data,
+      status: currentResponse.status,
+      statusText: currentResponse.statusText,
+      responseTime: currentResponse.responseTime,
+      error: currentResponse.error
+    })
     const now = new Date().toISOString()
+
+    const wasResolved = issue.resolved
+    const nowResolved = checkResult.resolved
+    const changed = wasResolved !== nowResolved
+
+    let comment = ''
+    if (changed) {
+      comment = nowResolved ? '复测通过，问题已修复' : '复测未通过，问题再次出现'
+    } else {
+      comment = nowResolved ? '复测确认：问题已修复' : '复测确认：问题仍然存在'
+    }
 
     const record: RetestRecord = {
       timestamp: now,
-      wasResolved: issue.resolved,
-      nowResolved: checkResult.resolved,
+      wasResolved,
+      nowResolved,
       previousActual: issue.actual,
       newActual: checkResult.newActual,
       previousExpected: issue.expected,
-      comment: checkResult.resolved ? '复测通过，问题已修复' : '复测未通过，问题仍然存在'
+      comment
     }
 
     const history = issue.retestHistory ? [...issue.retestHistory, record] : [record]
@@ -574,7 +594,7 @@ const InterfaceWorkbench: React.FC = () => {
     const patch: Partial<IssueItem> = {
       retestCount: issue.retestCount + 1,
       lastRetestAt: now,
-      resolved: checkResult.resolved,
+      resolved: nowResolved,
       retestHistory: history
     }
     if (checkResult.newActual !== undefined) {
@@ -584,13 +604,15 @@ const InterfaceWorkbench: React.FC = () => {
     await updateIssue(product.id, api.id, issue.id, patch)
     refresh()
 
-    if (checkResult.resolved) {
+    const statusLabel = nowResolved ? '已解决' : '未解决'
+    const changeLabel = changed ? (nowResolved ? ' ✅ 已修复' : ' ⚠️ 重新挂起') : '（状态无变化）'
+    if (nowResolved) {
       message.success(
-        `复测第 ${issue.retestCount + 1} 次：问题已自动标记为已解决 (${checkResult.newActual || '字段已正常'})`
+        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel} (${checkResult.newActual || '正常'})`
       )
     } else {
       message.warning(
-        `复测第 ${issue.retestCount + 1} 次：问题仍未修复 (实际: ${checkResult.newActual || '字段异常'})`
+        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel} (实际: ${checkResult.newActual || '异常'})`
       )
     }
   }

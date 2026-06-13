@@ -133,14 +133,24 @@ export const exportReportToExcel = async (report: AcceptanceReport) => {
   return null
 }
 
-export const computeTestCaseStats = (testCases: TestCase[]) => {
+export const computeTestCaseStats = (
+  testCases: TestCase[],
+  opts?: { interfaceFieldDefinitions?: any[] }
+) => {
   const total = testCases.length
   const executed = testCases.filter(
     (t) => t.executionStatus === 'checked' || t.executionStatus === 'executed'
   ).length
-  const passed = testCases.filter(
-    (t) => t.executionStatus === 'checked' && t.lastCheckPassed === true
-  ).length
+
+  const hasAnyFieldDefGlobal = !!(opts?.interfaceFieldDefinitions && opts.interfaceFieldDefinitions.length > 0)
+
+  const passed = testCases.filter((t) => {
+    if (t.executionStatus !== 'checked') return false
+    if (t.lastCheckPassed !== true) return false
+    const hasOwnFieldDef = !!(t.fieldDefinitions && t.fieldDefinitions.length > 0)
+    if (!hasOwnFieldDef && !hasAnyFieldDefGlobal) return false
+    return true
+  }).length
   const pending = total - executed
   return { total, executed, passed, pending }
 }
@@ -156,7 +166,9 @@ export const generateReport = (product: Product): AcceptanceReport => {
   let passedTestCases = 0
 
   const interfaceDetails = product.interfaces.map((api) => {
-    const tcStats = computeTestCaseStats(api.testCases)
+    const tcStats = computeTestCaseStats(api.testCases, {
+      interfaceFieldDefinitions: api.fieldDefinitions
+    })
     totalTestCases += tcStats.total
     executedTestCases += tcStats.executed
     passedTestCases += tcStats.passed
