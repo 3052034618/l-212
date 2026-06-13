@@ -1,0 +1,87 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+.json-viewer {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 6px;
+  max-height: 500px;
+  overflow: auto;
+}
+
+.json-key { color: #d73a49; }
+.json-string { color: #22863a; }
+.json-number { color: #005cc5; }
+.json-boolean { color: #e36209; }
+.json-null { color: #6a737d; }
+
+.method-tag {
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+}
+
+.method-GET { background: #e6f4ff; color: #1677ff; border: 1px solid #91caff; }
+.method-POST { background: #f6ffed; color: #52c41a; border: 1px solid #b7eb8f; }
+.method-PUT { background: #fff7e6; color: #fa8c16; border: 1px solid #ffd591; }
+.method-DELETE { background: #fff1f0; color: #f5222d; border: 1px solid #ffa39e; }
+.method-PATCH { background: #f9f0ff; color: #722ed1; border: 1px solid #d3adf7; }
+.method-HEAD { background: #e6fffb; color: #13c2c2; border: 1px solid #87e8de; }
+.method-OPTIONS { background: #f0f5ff; color: #2f54eb; border: 1px solid #adc6ff; }
+
+.status-ok { color: #52c41a; font-weight: 600; }
+.status-error { color: #f5222d; font-weight: 600; }
+.status-redirect { color: #fa8c16; font-weight: 600; }
+.status-info { color: #1677ff; font-weight: 600; }
+
+.panel-container {
+  background: #fff;
+  border-radius: 8px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.field-row:hover {
+  background: #fafafa;
+}
