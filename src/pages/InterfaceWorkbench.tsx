@@ -548,8 +548,9 @@ const InterfaceWorkbench: React.FC = () => {
   }
 
   const handleRetestIssue = async (issue: IssueItem) => {
-    if (!currentResponse) {
-      message.warning('请先发送请求获取最新响应，再进行复测')
+    const latestResponse = api.responses.length > 0 ? api.responses[0] : null
+    if (!latestResponse) {
+      message.warning('该接口还没有任何请求记录，请先发送请求再复测')
       return
     }
 
@@ -560,11 +561,11 @@ const InterfaceWorkbench: React.FC = () => {
     }
 
     const checkResult = checkSingleIssueResolved(issue, fieldDefs, {
-      responseData: currentResponse.data,
-      status: currentResponse.status,
-      statusText: currentResponse.statusText,
-      responseTime: currentResponse.responseTime,
-      error: currentResponse.error
+      responseData: latestResponse.data,
+      status: latestResponse.status,
+      statusText: latestResponse.statusText,
+      responseTime: latestResponse.responseTime,
+      error: latestResponse.error
     })
     const now = new Date().toISOString()
 
@@ -586,7 +587,9 @@ const InterfaceWorkbench: React.FC = () => {
       previousActual: issue.actual,
       newActual: checkResult.newActual,
       previousExpected: issue.expected,
-      comment
+      comment,
+      responseId: latestResponse.id,
+      responseTimestamp: latestResponse.timestamp
     }
 
     const history = issue.retestHistory ? [...issue.retestHistory, record] : [record]
@@ -606,13 +609,14 @@ const InterfaceWorkbench: React.FC = () => {
 
     const statusLabel = nowResolved ? '已解决' : '未解决'
     const changeLabel = changed ? (nowResolved ? ' ✅ 已修复' : ' ⚠️ 重新挂起') : '（状态无变化）'
+    const respTime = new Date(latestResponse.timestamp).toLocaleString('zh-CN')
     if (nowResolved) {
       message.success(
-        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel} (${checkResult.newActual || '正常'})`
+        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel}（基于最新响应 ${respTime}）`
       )
     } else {
       message.warning(
-        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel} (实际: ${checkResult.newActual || '异常'})`
+        `复测第 ${issue.retestCount + 1} 次：${statusLabel}${changeLabel}（基于最新响应 ${respTime}）`
       )
     }
   }
@@ -1267,15 +1271,22 @@ const InterfaceWorkbench: React.FC = () => {
                                     style={{
                                       display: 'flex',
                                       gap: 8,
-                                      padding: '4px 0',
+                                      padding: '6px 0',
                                       borderTop: idx === 0 ? 'none' : '1px dashed #e6e6e6',
                                       alignItems: 'flex-start',
                                       fontSize: 11
                                     }}
                                   >
-                                    <span style={{ color: '#8c8c8c', width: 160, flexShrink: 0 }}>
-                                      {new Date(rec.timestamp).toLocaleString('zh-CN')}
-                                    </span>
+                                    <div style={{ width: 160, flexShrink: 0 }}>
+                                      <div style={{ color: '#262626' }}>
+                                        {new Date(rec.timestamp).toLocaleString('zh-CN')}
+                                      </div>
+                                      {rec.responseTimestamp && (
+                                        <div style={{ color: '#8c8c8c', fontSize: 10, marginTop: 2 }}>
+                                          基于响应: {new Date(rec.responseTimestamp).toLocaleString('zh-CN')}
+                                        </div>
+                                      )}
+                                    </div>
                                     <span style={{ width: 70, flexShrink: 0 }}>
                                       {rec.nowResolved ? (
                                         <Tag color="success" style={{ margin: 0 }}>已修复</Tag>

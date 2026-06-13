@@ -62,6 +62,8 @@ export interface RetestRecord {
   newActual?: string
   previousExpected?: string
   comment?: string
+  responseId?: string
+  responseTimestamp?: string
 }
 
 export interface IssueItem {

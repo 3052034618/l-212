@@ -155,6 +155,53 @@ export const computeTestCaseStats = (
   return { total, executed, passed, pending }
 }
 
+export interface InterfaceEvaluation {
+  status: 'passed' | 'failed' | 'pending'
+  totalTestCases: number
+  executedTestCases: number
+  passedTestCases: number
+  pendingTestCases: number
+  unresolvedIssues: number
+  totalIssues: number
+  hasFieldDefinitions: boolean
+  hasResponses: boolean
+}
+
+export const evaluateInterface = (api: ApiInterface): InterfaceEvaluation => {
+  const tcStats = computeTestCaseStats(api.testCases, {
+    interfaceFieldDefinitions: api.fieldDefinitions
+  })
+  const apiUnresolved = api.issues.filter((i) => !i.resolved).length
+  const hasFieldDefinitions = (api.fieldDefinitions && api.fieldDefinitions.length > 0) ||
+    api.testCases.some((t) => t.fieldDefinitions && t.fieldDefinitions.length > 0)
+  const hasResponses = api.responses.length > 0
+
+  let status: 'passed' | 'failed' | 'pending' = 'pending'
+  if (tcStats.total === 0 || !hasFieldDefinitions || !hasResponses) {
+    status = 'pending'
+  } else if (apiUnresolved > 0) {
+    status = 'failed'
+  } else if (tcStats.executed === tcStats.total && tcStats.passed === tcStats.total) {
+    status = 'passed'
+  } else if (tcStats.pending > 0) {
+    status = 'pending'
+  } else {
+    status = 'failed'
+  }
+
+  return {
+    status,
+    totalTestCases: tcStats.total,
+    executedTestCases: tcStats.executed,
+    passedTestCases: tcStats.passed,
+    pendingTestCases: tcStats.pending,
+    unresolvedIssues: apiUnresolved,
+    totalIssues: api.issues.length,
+    hasFieldDefinitions,
+    hasResponses
+  }
+}
+
 export const generateReport = (product: Product): AcceptanceReport => {
   let passedInterfaces = 0
   let failedInterfaces = 0
@@ -166,50 +213,29 @@ export const generateReport = (product: Product): AcceptanceReport => {
   let passedTestCases = 0
 
   const interfaceDetails = product.interfaces.map((api) => {
-    const tcStats = computeTestCaseStats(api.testCases, {
-      interfaceFieldDefinitions: api.fieldDefinitions
-    })
-    totalTestCases += tcStats.total
-    executedTestCases += tcStats.executed
-    passedTestCases += tcStats.passed
-    totalIssues += api.issues.length
-    const apiUnresolved = api.issues.filter((i) => !i.resolved).length
-    unresolvedIssues += apiUnresolved
+    const evalResult = evaluateInterface(api)
+    totalTestCases += evalResult.totalTestCases
+    executedTestCases += evalResult.executedTestCases
+    passedTestCases += evalResult.passedTestCases
+    totalIssues += evalResult.totalIssues
+    unresolvedIssues += evalResult.unresolvedIssues
 
-    const hasFieldDefinitions = (api.fieldDefinitions && api.fieldDefinitions.length > 0) ||
-      api.testCases.some((t) => t.fieldDefinitions && t.fieldDefinitions.length > 0)
-    const hasResponses = api.responses.length > 0
-
-    let ifaceStatus: ApiInterface['status'] = api.status
-    if (tcStats.total === 0 || !hasFieldDefinitions || !hasResponses) {
-      ifaceStatus = 'pending'
-      pendingInterfaces++
-    } else if (apiUnresolved > 0) {
-      ifaceStatus = 'failed'
-      failedInterfaces++
-    } else if (tcStats.executed === tcStats.total && tcStats.passed === tcStats.total) {
-      ifaceStatus = 'passed'
-      passedInterfaces++
-    } else if (tcStats.pending > 0) {
-      ifaceStatus = 'pending'
-      pendingInterfaces++
-    } else {
-      ifaceStatus = 'failed'
-      failedInterfaces++
-    }
+    if (evalResult.status === 'passed') passedInterfaces++
+    else if (evalResult.status === 'failed') failedInterfaces++
+    else pendingInterfaces++
 
     return {
       interfaceId: api.id,
       interfaceName: api.name,
-      status: ifaceStatus,
-      totalTestCases: tcStats.total,
-      executedTestCases: tcStats.executed,
-      passedTestCases: tcStats.passed,
-      pendingTestCases: tcStats.pending,
-      unresolvedIssues: apiUnresolved,
-      totalIssues: api.issues.length,
-      hasFieldDefinitions,
-      hasResponses,
+      status: evalResult.status,
+      totalTestCases: evalResult.totalTestCases,
+      executedTestCases: evalResult.executedTestCases,
+      passedTestCases: evalResult.passedTestCases,
+      pendingTestCases: evalResult.pendingTestCases,
+      unresolvedIssues: evalResult.unresolvedIssues,
+      totalIssues: evalResult.totalIssues,
+      hasFieldDefinitions: evalResult.hasFieldDefinitions,
+      hasResponses: evalResult.hasResponses,
       issues: api.issues
     }
   })

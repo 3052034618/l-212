@@ -83,21 +83,15 @@ export const looksLikeRawSensitiveValue = (value: any): { likely: boolean; hint?
   const str = value.trim()
   if (!str) return { likely: false }
 
-  if (/^1[3-9][0-9]{9}$/.test(str)) return { likely: true, hint: '原始手机号(11位中国大陆手机号)' }
+  if (/^1[3-9][0-9]{9}$/.test(str)) return { likely: true, hint: '完整手机号(11位中国大陆手机号)' }
   if (/^1[3-9][0-9]-?[0-9]{4}-?[0-9]{4}$/.test(str) && /1[3-9]/.test(str)) {
-    return { likely: true, hint: '原始手机号(带横杠分隔)' }
+    return { likely: true, hint: '完整手机号(带横杠分隔)' }
   }
   if (/^[1-9][0-9]{5}(19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx]$/.test(str)) {
-    return { likely: true, hint: '原始18位身份证号(含出生日期校验)' }
+    return { likely: true, hint: '完整18位身份证号(含出生日期校验)' }
   }
   if (/^[1-9][0-9]{5}[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}$/.test(str)) {
-    return { likely: true, hint: '原始15位身份证号(含出生日期校验)' }
-  }
-  if (/^[1-9][0-9]{5}$/.test(str)) {
-    if (/^(11|12|13|14|15|21|22|23|31|32|33|34|35|36|37|41|42|43|44|45|46|50|51|52|53|54|61|62|63|64|65|71|81|82)/.test(str)) {
-      return { likely: true, hint: '疑似身份证前6位地区码(6位纯数字)' }
-    }
-    return { likely: false }
+    return { likely: true, hint: '完整15位身份证号(含出生日期校验)' }
   }
   if (/^[3-6][0-9]{12,18}$/.test(str)) {
     let sum = 0
@@ -112,12 +106,12 @@ export const looksLikeRawSensitiveValue = (value: any): { likely: boolean; hint?
     }
     const checkDigit = (10 - (sum % 10)) % 10
     if (checkDigit === digits[digits.length - 1]) {
-      return { likely: true, hint: '原始银行卡号(Luhn校验通过)' }
+      return { likely: true, hint: '完整银行卡号(Luhn校验通过)' }
     }
     return { likely: false }
   }
   if (/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(str)) {
-    return { likely: true, hint: '原始邮箱地址' }
+    return { likely: true, hint: '完整邮箱地址' }
   }
 
   return { likely: false }

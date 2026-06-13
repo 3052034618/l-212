@@ -37,7 +37,8 @@ import {
   exportIssuesToExcel,
   getIssueTypeLabel,
   getSeverityLabel,
-  computeTestCaseStats
+  computeTestCaseStats,
+  evaluateInterface
 } from '@/lib/exportUtils'
 import type { Product, AcceptanceReport } from '@/types'
 
@@ -88,19 +89,19 @@ const ReportPage: React.FC = () => {
   const unresolvedIssues = allIssues.filter((x) => !x.issue.resolved)
 
   const globalStats = useMemo(() => {
-    const totalInterfaces = products.reduce((s, p) => s + p.interfaces.length, 0)
-    const passedInterfaces = products.reduce(
-      (s, p) => s + p.interfaces.filter((a) => a.status === 'passed').length,
-      0
-    )
-    const failedInterfaces = products.reduce(
-      (s, p) => s + p.interfaces.filter((a) => a.status === 'failed').length,
-      0
-    )
-    const pendingInterfaces = products.reduce(
-      (s, p) => s + p.interfaces.filter((a) => a.status === 'pending').length,
-      0
-    )
+    let totalInterfaces = 0
+    let passedInterfaces = 0
+    let failedInterfaces = 0
+    let pendingInterfaces = 0
+    products.forEach((p) => {
+      p.interfaces.forEach((a) => {
+        totalInterfaces++
+        const evalResult = evaluateInterface(a)
+        if (evalResult.status === 'passed') passedInterfaces++
+        else if (evalResult.status === 'failed') failedInterfaces++
+        else pendingInterfaces++
+      })
+    })
     return {
       products: products.length,
       interfaces: totalInterfaces,
@@ -163,8 +164,13 @@ const ReportPage: React.FC = () => {
       key: 'pf',
       width: 140,
       render: (_: any, r: Product) => {
-        const passed = r.interfaces.filter((a) => a.status === 'passed').length
-        const failed = r.interfaces.filter((a) => a.status === 'failed').length
+        let passed = 0
+        let failed = 0
+        r.interfaces.forEach((a) => {
+          const s = evaluateInterface(a).status
+          if (s === 'passed') passed++
+          else if (s === 'failed') failed++
+        })
         return (
           <Space>
             <span style={{ color: '#52c41a' }}><CheckCircleOutlined /> {passed}</span>
